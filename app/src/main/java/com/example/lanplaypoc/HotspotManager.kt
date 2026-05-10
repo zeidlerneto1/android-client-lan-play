@@ -14,6 +14,9 @@ class HotspotManager(context: Context, private val onStatus: (String) -> Unit) {
     private var reservation: WifiManager.LocalOnlyHotspotReservation? = null
     private val wifiManager = appContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
 
+    private val fixedSSID = "Switch-Lan"
+    private val fixedPass = "12345678"
+
     fun start() {
         if (reservation != null) {
             onStatus("Hotspot is already active")
@@ -34,22 +37,7 @@ class HotspotManager(context: Context, private val onStatus: (String) -> Unit) {
             wifiManager.startLocalOnlyHotspot(object : WifiManager.LocalOnlyHotspotCallback() {
                 override fun onStarted(res: WifiManager.LocalOnlyHotspotReservation) {
                     reservation = res
-                    
-                    val ssid: String?
-                    val password: String?
-
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        val config = res.softApConfiguration
-                        ssid = config.ssid
-                        password = config.passphrase
-                    } else {
-                        @Suppress("DEPRECATION")
-                        val config = res.wifiConfiguration
-                        ssid = config?.SSID?.removeSurrounding("\"")
-                        password = config?.preSharedKey?.removeSurrounding("\"")
-                    }
-
-                    onStatus("Hotspot Started\nSSID: $ssid\nPass: $password")
+                    onStatus("Hotspot Started\nSSID: $fixedSSID\nPassword: $fixedPass")
                 }
 
                 override fun onFailed(reason: Int) {
