@@ -10,6 +10,7 @@ import java.util.concurrent.ConcurrentHashMap
 class UdpRelayServer(
     private val vpnService: VpnService,
     private val redirector: ServerRedirector,
+    private val onTunWrite: (ByteArray) -> Unit,
     private val onLog: (String) -> Unit
 ) {
     companion object {
@@ -90,12 +91,86 @@ class UdpRelayServer(
         } ?: return
 
         try {
-            val packet = DatagramPacket(payload, payload.size, managed.lastSourceIp, managed.lastSourcePort)
-            managed.socket.send(packet)
-            onLog("[RELAY] Enviado ${payload.size} bytes para ${managed.lastSourceIp.hostAddress}:${managed.lastSourcePort}")
+            val rawPacket = buildRawUdpPacket(
+                srcIp = InetAddress.getByName(GATEWAY_IP),
+                srcPort = gatewayPort.takeIf { it != 0 } ?: managed.socket.localPort,
+                dstIp = managed.lastSourceIp,
+                dstPort = managed.lastSourcePort,
+                payload = payload
+            )
+            onTunWrite(rawPacket)
+            onLog("[RELAY] Injetado pacote de ${payload.size} bytes no tun0 para ${managed.lastSourceIp.hostAddress}:${managed.lastSourcePort}")
         } catch (e: Exception) {
-            onLog("[RELAY] Erro ao enviar: ${e.message}")
+            onLog("[RELAY] Erro ao injetar: ${e.message}")
         }
+    }
+
+    private fun buildRawUdpPacket(
+        srcIp: InetAddress,
+        srcPort: Int,
+        dstIp: InetAddress,
+        dstPort: Int,
+        payload: ByteArray
+    ): ByteArray {
+        val totalLength = 20 + 8 + payload.size
+        val packet = ByteArray(totalLength)
+
+        // IP Header
+        packet[0] = 0x45.toByte() // Version 4, IHL 5
+        packet[1] = 0.toByte()    // TOS
+        packet[2] = (totalLength shr 8).toByte()
+        packet[3] = (totalLength and 0xFF).toByte()
+        packet[4] = 0.toByte()    // ID
+        packet[5] = 0.toByte()
+        packet[6] = 0x40.toByte() // Flags: Don't Fragment
+        packet[7] = 0.toByte()
+        packet[8] = 64.toByte()   // TTL
+        packet[9] = 17.toByte()   // Protocol UDP
+        
+        val srcIpBytes = srcIp.address
+        val dstIpBytes = dstIp.address
+        System.arraycopy(srcIpBytes, 0, packet, 12, 4)
+        System.arraycopy(dstIpBytes, 0, packet, 16, 4)
+
+        // IP Checksum
+        val ipChecksum = calculateChecksum(packet, 0, 20)
+        packet[10] = (ipChecksum shr 8).toByte()
+        packet[11] = (ipChecksum and 0xFF).toByte()
+
+        // UDP Header
+        val udpOffset = 20
+        packet[udpOffset] = (srcPort shr 8).toByte()
+        packet[udpOffset + 1] = (srcPort and 0xFF).toByte()
+        packet[udpOffset + 2] = (dstPort shr 8).toByte()
+        packet[udpOffset + 3] = (dstPort and 0xFF).toByte()
+        val udpLen = 8 + payload.size
+        packet[udpOffset + 4] = (udpLen shr 8).toByte()
+        packet[udpOffset + 5] = (udpLen and 0xFF).toByte()
+        packet[udpOffset + 6] = 0.toByte() // Checksum 0
+        packet[udpOffset + 7] = 0.toByte()
+
+        // Payload
+        System.arraycopy(payload, 0, packet, 28, payload.size)
+
+        return packet
+    }
+
+    private fun calculateChecksum(data: ByteArray, offset: Int, length: Int): Int {
+        var sum = 0
+        var i = offset
+        while (i < offset + length) {
+            if (i == offset + 10) { // Skip checksum field itself
+                i += 2
+                continue
+            }
+            val word = ((data[i].toInt() and 0xFF) shl 8) or (data[i + 1].toInt() and 0xFF)
+            sum += word
+            i += 2
+        }
+        while (sum shr 16 != 0) {
+            sum = (sum and 0xFFFF) + (sum shr 16)
+        }
+        return (sum.inv() and 0xFFFF)
     }
 
     private fun getIpString(packet: ByteArray, offset: Int): String {

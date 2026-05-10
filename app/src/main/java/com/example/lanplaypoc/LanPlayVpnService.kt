@@ -68,7 +68,13 @@ class LanPlayVpnService : VpnService(), Runnable {
                 }
             }, { broadcastLog(it) })
 
-            val r = UdpRelayServer(this, redirector!!, { broadcastLog(it) })
+            val r = UdpRelayServer(this, redirector!!, { packet ->
+                try {
+                    outStream.write(packet)
+                } catch (e: Exception) {
+                    Log.e("LanPlayPoC", "Error writing relay packet to tun0", e)
+                }
+            }, { broadcastLog(it) })
             this.relay = r
             redirector?.setRelay(r)
             redirector?.start()
