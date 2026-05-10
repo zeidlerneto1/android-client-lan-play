@@ -15,77 +15,87 @@ class ServerRedirector(
 ) {
     private var socket: DatagramSocket? = null
     private var receiveThread: Thread? = null
+    @Volatile
     private var running = false
-    private val serverIp: InetAddress
-    private val serverPort: Int
+    private var serverIp: InetAddress? = null
+    private var serverPort: Int = LanPlayProtocol.DEFAULT_PORT
 
-    init {
-        val parts = serverAddress.split(":")
-        serverIp = InetAddress.getByName(parts[0])
-        serverPort = if (parts.size > 1) parts[1].toInt() else LanPlayProtocol.DEFAULT_PORT
-    }
+    private val sendBuffer = ByteBuffer.allocate(LanPlayProtocol.HEADER_SIZE + 2048)
 
+    @Synchronized
     fun start() {
+        if (running) return
         running = true
-        socket = DatagramSocket().apply {
-            vpnService.protect(this)
-        }
         
         receiveThread = Thread {
-            val buffer = ByteArray(2048)
-            while (running) {
-                try {
+            try {
+                val parts = serverAddress.split(":")
+                serverIp = InetAddress.getByName(parts[0])
+                serverPort = if (parts.size > 1) parts[1].toInt() else LanPlayProtocol.DEFAULT_PORT
+                
+                socket = DatagramSocket().apply {
+                    vpnService.protect(this)
+                }
+                
+                onLog("Redirector started for $serverAddress")
+                
+                val buffer = ByteArray(4096)
+                while (running) {
                     val packet = DatagramPacket(buffer, buffer.size)
                     socket?.receive(packet)
                     handleServerPacket(packet.data, packet.length)
-                } catch (e: Exception) {
-                    if (running) onLog("Receive Error: ${e.message}")
                 }
+            } catch (e: Exception) {
+                if (running) onLog("Redirector Error: ${e.message}")
+            } finally {
+                stop()
             }
         }.apply { start() }
-        onLog("Redirector started for $serverAddress")
     }
 
+    @Synchronized
     fun stop() {
+        if (!running) return
         running = false
         socket?.close()
-        receiveThread?.interrupt()
         socket = null
+        receiveThread?.interrupt()
         receiveThread = null
+        onLog("Redirector stopped")
     }
 
     fun forwardToServer(packet: ByteArray, length: Int) {
+        val ip = serverIp ?: return
+        val s = socket ?: return
         try {
-            val header = LanPlayProtocol.Header(
-                magic = LanPlayProtocol.MAGIC_NUMBER,
-                type = LanPlayProtocol.PacketType.CONNECT,
-                compressed = 0,
-                length = length.toShort(),
-                decompressLength = length.toShort()
-            ).toBytes()
-
-            val combined = ByteBuffer.allocate(LanPlayProtocol.HEADER_SIZE + length)
-            combined.put(header)
-            combined.put(packet, 0, length)
-            
-            val data = combined.array()
-            val datagram = DatagramPacket(data, data.size, serverIp, serverPort)
-            socket?.send(datagram)
-            // Log.d("ServerRedirector", "Sent ${data.size} bytes to server")
+            synchronized(sendBuffer) {
+                sendBuffer.clear()
+                val header = LanPlayProtocol.Header(
+                    magic = LanPlayProtocol.MAGIC_NUMBER,
+                    type = LanPlayProtocol.PacketType.CONNECT,
+                    compressed = 0,
+                    length = length.toShort(),
+                    decompressLength = length.toShort()
+                ).toBytes()
+                
+                sendBuffer.put(header)
+                sendBuffer.put(packet, 0, length)
+                
+                val datagram = DatagramPacket(sendBuffer.array(), 0, LanPlayProtocol.HEADER_SIZE + length, ip, serverPort)
+                s.send(datagram)
+            }
         } catch (e: Exception) {
-            onLog("Send Error: ${e.message}")
+            // onLog("Send Error: ${e.message}")
         }
     }
 
     private fun handleServerPacket(data: ByteArray, length: Int) {
         if (length < LanPlayProtocol.HEADER_SIZE) return
         
-        val header = LanPlayProtocol.Header.fromBytes(data.copyOfRange(0, LanPlayProtocol.HEADER_SIZE))
+        val header = LanPlayProtocol.Header.fromBytes(data)
         if (header != null && header.magic == LanPlayProtocol.MAGIC_NUMBER) {
-            val payloadLength = length - LanPlayProtocol.HEADER_SIZE
             val payload = data.copyOfRange(LanPlayProtocol.HEADER_SIZE, length)
             onPacketReceived(payload)
-            // Log.d("ServerRedirector", "Received $payloadLength bytes from server")
         }
     }
 }
