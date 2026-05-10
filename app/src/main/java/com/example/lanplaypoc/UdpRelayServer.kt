@@ -54,17 +54,25 @@ class UdpRelayServer(
     }
 
     private fun handleInterceptedPacket(srcIp: InetAddress, srcPort: Int, dstPort: Int, payload: ByteArray) {
-        val managed = sockets.computeIfAbsent(dstPort) { port ->
+        var managed = sockets[dstPort]
+        if (managed == null) {
             try {
-                val socket = DatagramSocket(port, InetAddress.getByName(GATEWAY_IP))
+                val socket = DatagramSocket(dstPort, InetAddress.getByName(GATEWAY_IP))
                 vpnService.protect(socket)
-                onLog("[RELAY] Novo socket na porta $port")
-                ManagedSocket(socket, srcIp, srcPort, System.currentTimeMillis())
+                onLog("[RELAY] Novo socket na porta $dstPort")
+                val newManaged = ManagedSocket(socket, srcIp, srcPort, System.currentTimeMillis())
+                val existing = sockets.putIfAbsent(dstPort, newManaged)
+                if (existing != null) {
+                    socket.close()
+                    managed = existing
+                } else {
+                    managed = newManaged
+                }
             } catch (e: Exception) {
-                onLog("[RELAY] Erro ao criar socket na porta $port: ${e.message}")
-                null
+                onLog("[RELAY] Erro ao criar socket na porta $dstPort: ${e.message}")
+                return
             }
-        } ?: return
+        }
 
         managed.lastSourceIp = srcIp
         managed.lastSourcePort = srcPort

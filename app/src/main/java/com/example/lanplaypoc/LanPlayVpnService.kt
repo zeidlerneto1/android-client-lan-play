@@ -13,14 +13,13 @@ class LanPlayVpnService : VpnService(), Runnable {
     private var vpnInterface: ParcelFileDescriptor? = null
     private var thread: Thread? = null
     private var redirector: ServerRedirector? = null
+    private var relay: UdpRelayServer? = null
     private var serverAddr: String = "lan-play.com:11451"
 
     companion object {
         const val ACTION_VPN_LOG = "com.example.lanplaypoc.VPN_LOG"
         const val EXTRA_LOG_MESSAGE = "extra_log_message"
     }
-
-    private val sniffer = RawPacketSniffer { broadcastLog(it) }
 
     private fun broadcastLog(message: String) {
         val intent = Intent(ACTION_VPN_LOG)
@@ -68,6 +67,10 @@ class LanPlayVpnService : VpnService(), Runnable {
                     Log.e("LanPlayPoC", "Error writing to tun0", e)
                 }
             }, { broadcastLog(it) })
+
+            val r = UdpRelayServer(this, redirector!!, { broadcastLog(it) })
+            this.relay = r
+            redirector?.setRelay(r)
             redirector?.start()
 
             FileInputStream(fd).use { inputStream ->
@@ -75,14 +78,17 @@ class LanPlayVpnService : VpnService(), Runnable {
                 while (!Thread.interrupted()) {
                     val length = inputStream.read(buffer)
                     if (length > 0) {
-                        sniffer.parseAndLog(buffer, length)
-                        redirector?.forwardToServer(buffer, length)
+                        if (!r.processFromTun(buffer, length)) {
+                            redirector?.forwardToServer(buffer, length)
+                        }
                     }
                 }
             }
         } catch (e: Exception) {
             Log.e("LanPlayPoC", "VPN Loop Error", e)
         } finally {
+            relay?.stop()
+            relay = null
             redirector?.stop()
             redirector = null
             vpnInterface?.close()
