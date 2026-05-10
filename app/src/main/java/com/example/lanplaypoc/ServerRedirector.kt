@@ -19,8 +19,13 @@ class ServerRedirector(
     private var running = false
     private var serverIp: InetAddress? = null
     private var serverPort: Int = LanPlayProtocol.DEFAULT_PORT
+    private var relay: UdpRelayServer? = null
 
     private val sendBuffer = ByteBuffer.allocate(LanPlayProtocol.HEADER_SIZE + 2048)
+
+    fun setRelay(relay: UdpRelayServer) {
+        this.relay = relay
+    }
 
     @Synchronized
     fun start() {
@@ -64,7 +69,7 @@ class ServerRedirector(
         onLog("Redirector stopped")
     }
 
-    fun forwardToServer(packet: ByteArray, length: Int) {
+    fun forwardToServer(payload: ByteArray, length: Int, sourcePort: Int = 0) {
         val ip = serverIp ?: return
         val s = socket ?: return
         try {
@@ -79,7 +84,7 @@ class ServerRedirector(
                 ).toBytes()
                 
                 sendBuffer.put(header)
-                sendBuffer.put(packet, 0, length)
+                sendBuffer.put(payload, 0, length)
                 
                 val datagram = DatagramPacket(sendBuffer.array(), 0, LanPlayProtocol.HEADER_SIZE + length, ip, serverPort)
                 s.send(datagram)
@@ -95,7 +100,12 @@ class ServerRedirector(
         val header = LanPlayProtocol.Header.fromBytes(data)
         if (header != null && header.magic == LanPlayProtocol.MAGIC_NUMBER) {
             val payload = data.copyOfRange(LanPlayProtocol.HEADER_SIZE, length)
-            onPacketReceived(payload)
+            val r = relay
+            if (r != null) {
+                r.processFromServer(payload, 0)
+            } else {
+                onPacketReceived(payload)
+            }
         }
     }
 }
