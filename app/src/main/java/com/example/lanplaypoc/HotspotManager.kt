@@ -37,7 +37,22 @@ class HotspotManager(context: Context, private val onStatus: (String) -> Unit) {
             wifiManager.startLocalOnlyHotspot(object : WifiManager.LocalOnlyHotspotCallback() {
                 override fun onStarted(res: WifiManager.LocalOnlyHotspotReservation) {
                     reservation = res
-                    onStatus("Hotspot Started\nSSID: $fixedSSID\nPassword: $fixedPass")
+
+                    val ssid: String?
+                    val password: String?
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        val config = res.softApConfiguration
+                        ssid = config.ssid
+                        password = config.passphrase
+                    } else {
+                        @Suppress("DEPRECATION")
+                        val config = res.wifiConfiguration
+                        ssid = config?.SSID?.removeSurrounding("\"")
+                        password = config?.preSharedKey?.removeSurrounding("\"")
+                    }
+
+                    onStatus("Hotspot Started\nTarget SSID: $fixedSSID\nTarget Pass: $fixedPass\nActual SSID: $ssid\nActual Pass: $password")
                 }
 
                 override fun onFailed(reason: Int) {
