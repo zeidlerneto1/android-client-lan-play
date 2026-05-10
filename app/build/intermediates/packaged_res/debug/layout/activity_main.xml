@@ -4,6 +4,14 @@
     android:orientation="vertical"
     android:padding="16dp">
 
+    <EditText
+        android:id="@+id/editServer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="lan-play.com:11451"
+        android:inputType="textUri"
+        android:text="lan-play.com:11451" />
+
     <Button android:id="@+id/btnStart" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="START ALL" />
     <Button android:id="@+id/btnStop" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="STOP ALL" />
 

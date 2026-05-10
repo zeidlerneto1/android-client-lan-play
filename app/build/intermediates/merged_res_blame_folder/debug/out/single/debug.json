@@ -2,5 +2,9 @@
     {
         "merged": "com.example.lanplaypoc.app-merged_res-38:/layout_activity_main.xml.flat",
         "source": "com.example.lanplaypoc.app-main-40:/layout/activity_main.xml"
+    },
+    {
+        "merged": "C:\\Users\\peter\\.gradle\\daemon\\8.2\\com.example.lanplaypoc.app-merged_res-38:\\layout_activity_main.xml.flat",
+        "source": "C:\\Users\\peter\\.gradle\\daemon\\8.2\\com.example.lanplaypoc.app-main-40:\\layout\\activity_main.xml"
     }
 ]
