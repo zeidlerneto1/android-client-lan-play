@@ -12,6 +12,10 @@ class UdpRelayServer(
     private val redirector: ServerRedirector,
     private val onLog: (String) -> Unit
 ) {
+    companion object {
+        const val GATEWAY_IP = "10.13.37.1"
+    }
+
     private val sockets = ConcurrentHashMap<Int, ManagedSocket>()
 
     data class ManagedSocket(
@@ -32,13 +36,12 @@ class UdpRelayServer(
         if (protocol != 17) return false // UDP Only
 
         val dstIp = getIpString(packet, 16)
-        if (dstIp != "10.13.37.1") return false
+        if (dstIp != GATEWAY_IP) return false
 
         val ihl = (packet[0].toInt() and 0x0F) * 4
         val srcIp = InetAddress.getByAddress(packet.copyOfRange(12, 16))
         val srcPort = getPort(packet, ihl)
         val dstPort = getPort(packet, ihl + 2)
-        val udpLen = getPort(packet, ihl + 4)
         
         val payloadOffset = ihl + 8
         val payloadLen = length - payloadOffset
@@ -51,16 +54,17 @@ class UdpRelayServer(
     }
 
     private fun handleInterceptedPacket(srcIp: InetAddress, srcPort: Int, dstPort: Int, payload: ByteArray) {
-        val managed = sockets.getOrPut(dstPort) {
-            val socket = DatagramSocket(dstPort, InetAddress.getByName("10.13.37.1"))
-            vpnService.protect(socket)
-            onLog("[RELAY] Novo socket na porta $dstPort")
-            
-            // In a real app, we'd start a receive loop for this socket here
-            // For the PoC, we rely on ServerRedirector to provide the response path
-            
-            ManagedSocket(socket, srcIp, srcPort, System.currentTimeMillis())
-        }
+        val managed = sockets.computeIfAbsent(dstPort) { port ->
+            try {
+                val socket = DatagramSocket(port, InetAddress.getByName(GATEWAY_IP))
+                vpnService.protect(socket)
+                onLog("[RELAY] Novo socket na porta $port")
+                ManagedSocket(socket, srcIp, srcPort, System.currentTimeMillis())
+            } catch (e: Exception) {
+                onLog("[RELAY] Erro ao criar socket na porta $port: ${e.message}")
+                null
+            }
+        } ?: return
 
         managed.lastSourceIp = srcIp
         managed.lastSourcePort = srcPort
@@ -71,7 +75,6 @@ class UdpRelayServer(
     }
 
     fun processFromServer(payload: ByteArray, gatewayPort: Int) {
-        // If gatewayPort is 0, we find the most recently active socket for now
         val managed = if (gatewayPort == 0) {
             sockets.values.maxByOrNull { it.lastActivity }
         } else {
@@ -96,7 +99,9 @@ class UdpRelayServer(
     }
     
     fun stop() {
-        sockets.values.forEach { it.socket.close() }
+        sockets.values.forEach { 
+            try { it.socket.close() } catch (e: Exception) {}
+        }
         sockets.clear()
     }
 }
