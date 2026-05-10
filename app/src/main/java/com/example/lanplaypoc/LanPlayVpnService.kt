@@ -12,11 +12,15 @@ import java.nio.ByteBuffer
 class LanPlayVpnService : VpnService(), Runnable {
     private var vpnInterface: ParcelFileDescriptor? = null
     private var thread: Thread? = null
+    private var redirector: ServerRedirector? = null
+    private var serverAddr: String = "lan-play.com:11451"
 
     companion object {
         const val ACTION_VPN_LOG = "com.example.lanplaypoc.VPN_LOG"
         const val EXTRA_LOG_MESSAGE = "extra_log_message"
     }
+
+    private val sniffer = RawPacketSniffer { broadcastLog(it) }
 
     private fun broadcastLog(message: String) {
         val intent = Intent(ACTION_VPN_LOG)
@@ -25,6 +29,7 @@ class LanPlayVpnService : VpnService(), Runnable {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        serverAddr = intent?.getStringExtra("server_addr") ?: "lan-play.com:11451"
         if (thread == null) {
             thread = Thread(this, "LanPlayVpnThread").apply { start() }
         }
@@ -55,53 +60,35 @@ class LanPlayVpnService : VpnService(), Runnable {
             }
 
             val fd = vpnInterface!!.fileDescriptor
+            val outStream = FileOutputStream(fd)
+            redirector = ServerRedirector(this, serverAddr, { packet ->
+                try {
+                    outStream.write(packet)
+                } catch (e: Exception) {
+                    Log.e("LanPlayPoC", "Error writing to tun0", e)
+                }
+            }, { broadcastLog(it) })
+            redirector?.start()
+
             FileInputStream(fd).use { inputStream ->
                 val buffer = ByteArray(2048)
                 while (!Thread.interrupted()) {
                     val length = inputStream.read(buffer)
                     if (length > 0) {
-                        parsePacket(buffer, length)
+                        sniffer.parseAndLog(buffer, length)
+                        redirector?.forwardToServer(buffer, length)
                     }
                 }
             }
         } catch (e: Exception) {
             Log.e("LanPlayPoC", "VPN Loop Error", e)
         } finally {
+            redirector?.stop()
+            redirector = null
             vpnInterface?.close()
             vpnInterface = null
             thread = null
             Log.d("LanPlayPoC", "VPN Thread Stopped")
-        }
-    }
-
-    private fun parsePacket(packet: ByteArray, length: Int) {
-        if (length < 20) return // Minimum IPv4 header length
-
-        // Basic IPv4 Parsing
-        val version = (packet[0].toInt() shr 4) and 0x0F
-        if (version != 4) return // Only IPv4
-
-        val protocol = packet[9].toInt() and 0xFF
-        val srcIp = "${packet[12].toInt() and 0xFF}.${packet[13].toInt() and 0xFF}.${packet[14].toInt() and 0xFF}.${packet[15].toInt() and 0xFF}"
-        val dstIp = "${packet[16].toInt() and 0xFF}.${packet[17].toInt() and 0xFF}.${packet[18].toInt() and 0xFF}.${packet[19].toInt() and 0xFF}"
-
-        if (protocol == 17) { // UDP
-            val ihl = (packet[0].toInt() and 0x0F) * 4
-            if (length >= ihl + 8) { // UDP header is 8 bytes
-                val srcPort = ((packet[ihl].toInt() and 0xFF) shl 8) or (packet[ihl + 1].toInt() and 0xFF)
-                val dstPort = ((packet[ihl + 2].toInt() and 0xFF) shl 8) or (packet[ihl + 3].toInt() and 0xFF)
-                val logMsg = "[RAW] UDP $srcIp:$srcPort -> $dstIp:$dstPort (Len: $length)"
-                Log.d("LanPlayPoC", logMsg)
-                broadcastLog(logMsg)
-            }
-        } else if (protocol == 1) { // ICMP for ping testing
-            val logMsg = "[RAW] ICMP $srcIp -> $dstIp"
-            Log.d("LanPlayPoC", logMsg)
-            broadcastLog(logMsg)
-        } else {
-            val logMsg = "[RAW] Protocol $protocol from $srcIp -> $dstIp"
-            Log.d("LanPlayPoC", logMsg)
-            broadcastLog(logMsg)
         }
     }
 }
