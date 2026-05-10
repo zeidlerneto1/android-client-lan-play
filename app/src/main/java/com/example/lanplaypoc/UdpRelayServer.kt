@@ -6,6 +6,8 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.concurrent.thread
 
 class UdpRelayServer(
     private val vpnService: VpnService,
@@ -15,9 +17,56 @@ class UdpRelayServer(
 ) {
     companion object {
         const val GATEWAY_IP = "10.13.37.1"
+        const val IDLE_TIMEOUT_MS = 60_000L
     }
 
     private val sockets = ConcurrentHashMap<Int, ManagedSocket>()
+    private val bytesReadThisSecond = AtomicLong(0)
+    private val lastPacketTimestamp = AtomicLong(System.currentTimeMillis())
+    private var lastLoggedFirstByte = -1
+    private var lastFirstByteLogTime = 0L
+    private var watchdogRunning = true
+    private val watchdogThread: Thread
+
+    init {
+        watchdogThread = thread(start = true, name = "UdpRelayWatchdog") {
+            onLog("[DEBUG] Watchdog iniciado")
+            while (watchdogRunning) {
+                try {
+                    Thread.sleep(1000)
+                    val bytes = bytesReadThisSecond.getAndSet(0)
+                    if (bytes > 0) {
+                        onLog("[DEBUG] tun0 throughput: $bytes bytes/s")
+                    }
+
+                    val now = System.currentTimeMillis()
+                    if (now - lastPacketTimestamp.get() > 10000) {
+                        onLog("[DEBUG] Nenhum dado na tun0 - Switch pode estar desconectado")
+                        lastPacketTimestamp.set(now) // Reset to avoid constant logging
+                    }
+                    
+                    cleanupIdleSockets(now)
+                } catch (e: InterruptedException) {
+                    break
+                } catch (e: Exception) {
+                    onLog("[DEBUG] Watchdog Erro: ${e.message}")
+                }
+            }
+            onLog("[DEBUG] Watchdog parado")
+        }
+    }
+
+    private fun cleanupIdleSockets(now: Long) {
+        val iterator = sockets.entries.iterator()
+        while (iterator.hasNext()) {
+            val entry = iterator.next()
+            if (now - entry.value.lastActivity > IDLE_TIMEOUT_MS) {
+                onLog("[RELAY] Fechando socket ocioso na porta ${entry.key}")
+                try { entry.value.socket.close() } catch (e: Exception) {}
+                iterator.remove()
+            }
+        }
+    }
 
     data class ManagedSocket(
         val socket: DatagramSocket,
@@ -27,6 +76,23 @@ class UdpRelayServer(
     )
 
     fun processFromTun(packet: ByteArray, length: Int): Boolean {
+        // Log diagnostics BEFORE any filter
+        bytesReadThisSecond.addAndGet(length.toLong())
+        lastPacketTimestamp.set(System.currentTimeMillis())
+
+        val firstByte = packet[0].toInt() and 0xFF
+        val now = System.currentTimeMillis()
+        if (firstByte != lastLoggedFirstByte || now - lastFirstByteLogTime > 5000) {
+            val type = when (firstByte shr 4) {
+                4 -> "IPv4"
+                6 -> "IPv6"
+                else -> "Desconhecido"
+            }
+            onLog("[DEBUG] tun0 packet start: 0x${Integer.toHexString(firstByte).uppercase()} ($type) Len: $length")
+            lastLoggedFirstByte = firstByte
+            lastFirstByteLogTime = now
+        }
+
         if (length < 28) return false // IP(20) + UDP(8)
 
         // Basic IPv4 Parsing
@@ -79,7 +145,7 @@ class UdpRelayServer(
         managed.lastSourcePort = srcPort
         managed.lastActivity = System.currentTimeMillis()
 
-        onLog("[RELAY] Recebido ${payload.size} bytes de ${srcIp.hostAddress}:$srcPort na porta $dstPort")
+        onLog("[RELAY] Recebido ${payload.size} bytes de ${srcIp.hostAddress}:$srcPort -> porta $dstPort")
         redirector.forwardToServer(payload, payload.size, dstPort)
     }
 
@@ -99,7 +165,7 @@ class UdpRelayServer(
                 payload = payload
             )
             onTunWrite(rawPacket)
-            onLog("[RELAY] Injetado pacote de ${payload.size} bytes no tun0 para ${managed.lastSourceIp.hostAddress}:${managed.lastSourcePort}")
+            onLog("[RELAY] Enviado ${payload.size} bytes para ${managed.lastSourceIp.hostAddress}:${managed.lastSourcePort}")
         } catch (e: Exception) {
             onLog("[RELAY] Erro ao injetar: ${e.message}")
         }
@@ -182,6 +248,8 @@ class UdpRelayServer(
     }
     
     fun stop() {
+        watchdogRunning = false
+        watchdogThread.interrupt()
         sockets.values.forEach { 
             try { it.socket.close() } catch (e: Exception) {}
         }
