@@ -1,12 +1,14 @@
 package com.example.lanplaypoc
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.widget.Button
+import android.widget.EditText
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
@@ -15,6 +17,7 @@ import androidx.core.app.ActivityCompat
 
 class MainActivity : AppCompatActivity() {
     private val viewModel: MainViewModel by viewModels()
+    private lateinit var editServer: EditText
     private lateinit var btnStart: Button
     private lateinit var btnStop: Button
     private lateinit var txtStatus: TextView
@@ -45,10 +48,14 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        editServer = findViewById(R.id.editServer)
         btnStart = findViewById(R.id.btnStart)
         btnStop = findViewById(R.id.btnStop)
         txtStatus = findViewById(R.id.txtStatus)
         txtLogs = findViewById(R.id.txtLogs)
+
+        val prefs = getSharedPreferences("lanplay", Context.MODE_PRIVATE)
+        editServer.setText(prefs.getString("server_addr", "lan-play.com:11451"))
 
         // Observe ViewModel state
         viewModel.status.observe(this) { status ->
@@ -57,7 +64,11 @@ class MainActivity : AppCompatActivity() {
 
         viewModel.logs.observe(this) { logs ->
             txtLogs.text = logs
-            // Auto-scroll to bottom could be added here
+            // Simple scroll to bottom
+            val scrollAmount = txtLogs.layout?.let { it.getLineTop(txtLogs.lineCount) - txtLogs.height } ?: 0
+            if (scrollAmount > 0) {
+                txtLogs.scrollTo(0, scrollAmount)
+            }
         }
 
         btnStart.setOnClickListener {
@@ -97,7 +108,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun startVpnService() {
         viewModel.log("Starting VPN Service...")
-        val intent = Intent(this, LanPlayVpnService::class.java)
+        val serverAddr = editServer.text.toString()
+        val prefs = getSharedPreferences("lanplay", Context.MODE_PRIVATE)
+        prefs.edit().putString("server_addr", serverAddr).apply()
+
+        val intent = Intent(this, LanPlayVpnService::class.java).apply {
+            putExtra("server_addr", serverAddr)
+        }
         startService(intent)
     }
 
