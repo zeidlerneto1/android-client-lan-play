@@ -1,19 +1,17 @@
 package com.example.lanplaypoc
 
-import android.Manifest
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.VpnService
-import android.os.Build
+import android.net.wifi.WifiManager
 import android.os.Bundle
+import android.text.format.Formatter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
 
 class MainActivity : AppCompatActivity() {
     private val viewModel: MainViewModel by viewModels()
@@ -22,6 +20,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnStop: Button
     private lateinit var txtStatus: TextView
     private lateinit var txtLogs: TextView
+    private lateinit var txtHotspotIp: TextView
+    private lateinit var txtSwitchIp: TextView
+    private var networkScanner: NetworkScanner? = null
 
     private val vpnPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -29,18 +30,7 @@ class MainActivity : AppCompatActivity() {
         if (result.resultCode == RESULT_OK) {
             startVpnService()
         } else {
-            viewModel.log("VPN Permission denied")
-        }
-    }
-
-    private val requestPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        val granted = permissions.entries.all { it.value }
-        if (granted) {
-            startAll()
-        } else {
-            viewModel.log("Permissions denied")
+            viewModel.log("[ERROR] VPN Permission denied")
         }
     }
 
@@ -53,51 +43,48 @@ class MainActivity : AppCompatActivity() {
         btnStop = findViewById(R.id.btnStop)
         txtStatus = findViewById(R.id.txtStatus)
         txtLogs = findViewById(R.id.txtLogs)
+        txtHotspotIp = findViewById(R.id.txtHotspotIp)
+        txtSwitchIp = findViewById(R.id.txtSwitchIp)
 
         val prefs = getSharedPreferences("lanplay", Context.MODE_PRIVATE)
         editServer.setText(prefs.getString("server_addr", "lan-play.com:11451"))
 
-        // Observe ViewModel state
-        viewModel.status.observe(this) { status ->
-            txtStatus.text = status
-        }
-
+        viewModel.status.observe(this) { status -> txtStatus.text = status }
         viewModel.logs.observe(this) { logs ->
             txtLogs.text = logs
-            // Simple scroll to bottom
             val scrollAmount = txtLogs.layout?.let { it.getLineTop(txtLogs.lineCount) - txtLogs.height } ?: 0
-            if (scrollAmount > 0) {
-                txtLogs.scrollTo(0, scrollAmount)
-            }
+            if (scrollAmount > 0) txtLogs.scrollTo(0, scrollAmount)
         }
 
-        btnStart.setOnClickListener {
-            if (hasPermissions()) {
-                startAll()
-            } else {
-                requestPermissions()
-            }
-        }
+        btnStart.setOnClickListener { prepareVpn() }
+        btnStop.setOnClickListener { stopAll() }
 
-        btnStop.setOnClickListener {
-            stopAll()
-        }
+        networkScanner = NetworkScanner(
+            onDeviceFound = { ip, _ ->
+                runOnUiThread { txtSwitchIp.text = "Switch detectado em $ip" }
+            },
+            onLog = { msg -> viewModel.log(msg) }
+        )
+        
+        updateHotspotIp()
     }
-
-    private fun startAll() {
-        viewModel.log("Starting All...")
-        viewModel.startHotspot()
-        prepareVpn()
-    }
-
-    private fun stopAll() {
-        viewModel.log("Stopping All...")
-        viewModel.stopHotspot()
-        val intent = Intent(this, LanPlayVpnService::class.java)
-        stopService(intent)
+    
+    private fun updateHotspotIp() {
+        try {
+            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val dhcpInfo = wifiManager.dhcpInfo
+            if (dhcpInfo != null && dhcpInfo.serverAddress != 0) {
+                val ip = Formatter.formatIpAddress(dhcpInfo.serverAddress)
+                txtHotspotIp.text = "Hotspot IP: $ip"
+            }
+        } catch (e: Exception) {
+            viewModel.log("[ERROR] Falha ao obter IP do hotspot: ${e.message}")
+        }
     }
 
     private fun prepareVpn() {
+        updateHotspotIp()
+        networkScanner?.start()
         val intent = VpnService.prepare(this)
         if (intent != null) {
             vpnPermissionLauncher.launch(intent)
@@ -107,7 +94,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startVpnService() {
-        viewModel.log("Starting VPN Service...")
+        viewModel.log("[INFO] Iniciando Relay...")
+        viewModel.setStatus("Status: Running")
         val serverAddr = editServer.text.toString()
         val prefs = getSharedPreferences("lanplay", Context.MODE_PRIVATE)
         prefs.edit().putString("server_addr", serverAddr).apply()
@@ -118,23 +106,17 @@ class MainActivity : AppCompatActivity() {
         startService(intent)
     }
 
-    private fun hasPermissions(): Boolean {
-        val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES)
-        } else {
-            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
-        }
-        return permissions.all {
-            ActivityCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
-        }
+    private fun stopAll() {
+        viewModel.log("[INFO] Parando Relay...")
+        viewModel.setStatus("Status: Stopped")
+        networkScanner?.stop()
+        txtSwitchIp.text = "Switch: Aguardando tráfego..."
+        val intent = Intent(this, LanPlayVpnService::class.java)
+        stopService(intent)
     }
-
-    private fun requestPermissions() {
-        val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES)
-        } else {
-            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
-        }
-        requestPermissionLauncher.launch(permissions)
+    
+    override fun onDestroy() {
+        super.onDestroy()
+        networkScanner?.stop()
     }
 }
