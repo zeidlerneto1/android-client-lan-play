@@ -175,12 +175,44 @@ class UdpRelayServer(
         val udpLen = 8 + payload.size
         packet[udpOffset + 4] = (udpLen shr 8).toByte()
         packet[udpOffset + 5] = (udpLen and 0xFF).toByte()
+        
+        // UDP Checksum with Pseudo-header
         packet[udpOffset + 6] = 0.toByte()
         packet[udpOffset + 7] = 0.toByte()
+        val udpChecksum = calculateUdpChecksum(packet, udpOffset, udpLen, srcIp.address, dstIp.address)
+        packet[udpOffset + 6] = (udpChecksum shr 8).toByte()
+        packet[udpOffset + 7] = (udpChecksum and 0xFF).toByte()
 
         System.arraycopy(payload, 0, packet, 28, payload.size)
 
         return packet
+    }
+
+    private fun calculateUdpChecksum(packet: ByteArray, udpOffset: Int, udpLen: Int, srcIp: ByteArray, dstIp: ByteArray): Int {
+        var sum = 0
+        
+        // Pseudo-header
+        for (i in 0..3 step 2) {
+            sum += ((srcIp[i].toInt() and 0xFF) shl 8) or (srcIp[i + 1].toInt() and 0xFF)
+            sum += ((dstIp[i].toInt() and 0xFF) shl 8) or (dstIp[i + 1].toInt() and 0xFF)
+        }
+        sum += 17 // Protocol UDP
+        sum += udpLen
+
+        // UDP Header + Payload
+        var i = udpOffset
+        while (i < udpOffset + udpLen - 1) {
+            val word = ((packet[i].toInt() and 0xFF) shl 8) or (packet[i + 1].toInt() and 0xFF)
+            sum += word
+            i += 2
+        }
+        if (i < udpOffset + udpLen) {
+            sum += (packet[i].toInt() and 0xFF) shl 8
+        }
+
+        while (sum shr 16 != 0) sum = (sum and 0xFFFF) + (sum shr 16)
+        val result = (sum.inv() and 0xFFFF)
+        return if (result == 0) 0xFFFF else result
     }
 
     private fun calculateChecksum(data: ByteArray, offset: Int, length: Int): Int {

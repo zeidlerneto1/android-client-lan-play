@@ -32,6 +32,7 @@ class LanPlayVpnService : VpnService() {
         try {
             val builder = Builder()
                 .setSession("Switch LAN Play")
+                .setMtu(1500)
                 .addAddress("192.168.49.1", 24) // Dummy address needed to establish TUN interface
                 .addRoute("0.0.0.0", 0) // Catch all traffic
 

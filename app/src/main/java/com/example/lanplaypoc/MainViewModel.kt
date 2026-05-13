@@ -40,7 +40,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun log(message: String) {
         val timestamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(Date())
         val currentLogs = _logs.value ?: ""
-        _logs.postValue("$currentLogs[$timestamp] $message\n")
+        val newLog = "$currentLogs[$timestamp] $message\n"
+        
+        // Limit to ~1000 lines to prevent memory issues
+        val lines = newLog.lines()
+        val truncatedLogs = if (lines.size > 1000) {
+            lines.takeLast(1000).joinToString("\n")
+        } else {
+            newLog
+        }
+        
+        _logs.postValue(truncatedLogs)
     }
 
     override fun onCleared() {
