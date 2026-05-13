@@ -1,58 +1,49 @@
 package com.example.lanplaypoc
 
+import android.content.Context
 import android.net.VpnService
-import android.util.Log
-import java.net.DatagramPacket
+import android.net.wifi.WifiManager
+import android.text.format.Formatter
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
 class UdpRelayServer(
     private val vpnService: VpnService,
     private val redirector: ServerRedirector,
     private val onTunWrite: (ByteArray) -> Unit,
-    private val onLog: (String) -> Unit
+    private val onLog: (String) -> Unit,
+    private val context: Context
 ) {
     companion object {
-        const val GATEWAY_IP = "10.13.37.1"
         const val IDLE_TIMEOUT_MS = 60_000L
     }
 
     private val sockets = ConcurrentHashMap<Int, ManagedSocket>()
-    private val bytesReadThisSecond = AtomicLong(0)
-    private val lastPacketTimestamp = AtomicLong(System.currentTimeMillis())
-    private var lastLoggedFirstByte = -1
-    private var lastFirstByteLogTime = 0L
     private var watchdogRunning = true
     private val watchdogThread: Thread
+    private var gatewayIp: String = ""
 
     init {
+        try {
+            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val dhcpInfo = wifiManager.dhcpInfo
+            if (dhcpInfo != null && dhcpInfo.serverAddress != 0) {
+                gatewayIp = Formatter.formatIpAddress(dhcpInfo.serverAddress)
+                onLog("[INFO] Gateway IP detectado: $gatewayIp")
+            }
+        } catch (e: Exception) {}
+
         watchdogThread = thread(start = true, name = "UdpRelayWatchdog") {
-            onLog("[DEBUG] Watchdog iniciado")
             while (watchdogRunning) {
                 try {
-                    Thread.sleep(1000)
-                    val bytes = bytesReadThisSecond.getAndSet(0)
-                    if (bytes > 0) {
-                        onLog("[DEBUG] tun0 throughput: $bytes bytes/s")
-                    }
-
-                    val now = System.currentTimeMillis()
-                    if (now - lastPacketTimestamp.get() > 10000) {
-                        onLog("[DEBUG] Nenhum dado na tun0 - Switch pode estar desconectado")
-                        lastPacketTimestamp.set(now) // Reset to avoid constant logging
-                    }
-                    
-                    cleanupIdleSockets(now)
+                    Thread.sleep(5000)
+                    cleanupIdleSockets(System.currentTimeMillis())
                 } catch (e: InterruptedException) {
                     break
-                } catch (e: Exception) {
-                    onLog("[DEBUG] Watchdog Erro: ${e.message}")
                 }
             }
-            onLog("[DEBUG] Watchdog parado")
         }
     }
 
@@ -61,7 +52,7 @@ class UdpRelayServer(
         while (iterator.hasNext()) {
             val entry = iterator.next()
             if (now - entry.value.lastActivity > IDLE_TIMEOUT_MS) {
-                onLog("[RELAY] Fechando socket ocioso na porta ${entry.key}")
+                onLog("[SOCKET] Removido socket inativo na porta ${entry.key}")
                 try { entry.value.socket.close() } catch (e: Exception) {}
                 iterator.remove()
             }
@@ -76,34 +67,19 @@ class UdpRelayServer(
     )
 
     fun processFromTun(packet: ByteArray, length: Int): Boolean {
-        // Log diagnostics BEFORE any filter
-        bytesReadThisSecond.addAndGet(length.toLong())
-        lastPacketTimestamp.set(System.currentTimeMillis())
+        if (length < 28) return false
 
-        val firstByte = packet[0].toInt() and 0xFF
-        val now = System.currentTimeMillis()
-        if (firstByte != lastLoggedFirstByte || now - lastFirstByteLogTime > 5000) {
-            val type = when (firstByte shr 4) {
-                4 -> "IPv4"
-                6 -> "IPv6"
-                else -> "Desconhecido"
-            }
-            onLog("[DEBUG] tun0 packet start: 0x${Integer.toHexString(firstByte).uppercase()} ($type) Len: $length")
-            lastLoggedFirstByte = firstByte
-            lastFirstByteLogTime = now
-        }
-
-        if (length < 28) return false // IP(20) + UDP(8)
-
-        // Basic IPv4 Parsing
         val version = (packet[0].toInt() shr 4) and 0x0F
         if (version != 4) return false
 
         val protocol = packet[9].toInt() and 0xFF
-        if (protocol != 17) return false // UDP Only
+        if (protocol != 17) return false
 
         val dstIp = getIpString(packet, 16)
-        if (dstIp != GATEWAY_IP) return false
+        // Accept packets destined to the hotspot gateway or broadcast
+        if (gatewayIp.isNotEmpty() && dstIp != gatewayIp && dstIp != "255.255.255.255") {
+            return false
+        }
 
         val ihl = (packet[0].toInt() and 0x0F) * 4
         val srcIp = InetAddress.getByAddress(packet.copyOfRange(12, 16))
@@ -124,9 +100,10 @@ class UdpRelayServer(
         var managed = sockets[dstPort]
         if (managed == null) {
             try {
-                val socket = DatagramSocket(dstPort, InetAddress.getByName(GATEWAY_IP))
+                // Bind dynamically on standard interface using DatagramSocket
+                val socket = DatagramSocket(dstPort)
                 vpnService.protect(socket)
-                onLog("[RELAY] Novo socket na porta $dstPort")
+                onLog("[SOCKET] Criado socket na porta $dstPort")
                 val newManaged = ManagedSocket(socket, srcIp, srcPort, System.currentTimeMillis())
                 val existing = sockets.putIfAbsent(dstPort, newManaged)
                 if (existing != null) {
@@ -136,7 +113,7 @@ class UdpRelayServer(
                     managed = newManaged
                 }
             } catch (e: Exception) {
-                onLog("[RELAY] Erro ao criar socket na porta $dstPort: ${e.message}")
+                onLog("[ERROR] Falha ao fazer bind na porta $dstPort: ${e.message}")
                 return
             }
         }
@@ -145,65 +122,51 @@ class UdpRelayServer(
         managed.lastSourcePort = srcPort
         managed.lastActivity = System.currentTimeMillis()
 
-        onLog("[RELAY] Recebido ${payload.size} bytes de ${srcIp.hostAddress}:$srcPort -> porta $dstPort")
+        onLog("[LOCAL] Recebido de ${srcIp.hostAddress}:$srcPort | Payload: ${payload.size} bytes")
         redirector.forwardToServer(payload, payload.size, dstPort)
     }
 
     fun processFromServer(payload: ByteArray, gatewayPort: Int) {
-        val managed = if (gatewayPort == 0) {
-            sockets.values.maxByOrNull { it.lastActivity }
-        } else {
-            sockets[gatewayPort]
-        } ?: return
+        val managed = if (gatewayPort != 0) sockets[gatewayPort] else sockets.values.maxByOrNull { it.lastActivity }
+        if (managed == null) return
 
         try {
             val rawPacket = buildRawUdpPacket(
-                srcIp = InetAddress.getByName(GATEWAY_IP),
+                srcIp = InetAddress.getByName(gatewayIp.takeIf { it.isNotEmpty() } ?: "192.168.43.1"),
                 srcPort = gatewayPort.takeIf { it != 0 } ?: managed.socket.localPort,
                 dstIp = managed.lastSourceIp,
                 dstPort = managed.lastSourcePort,
                 payload = payload
             )
             onTunWrite(rawPacket)
-            onLog("[RELAY] Enviado ${payload.size} bytes para ${managed.lastSourceIp.hostAddress}:${managed.lastSourcePort}")
+            onLog("[LOCAL] Enviado ${payload.size} bytes para ${managed.lastSourceIp.hostAddress}:${managed.lastSourcePort}")
         } catch (e: Exception) {
-            onLog("[RELAY] Erro ao injetar: ${e.message}")
+            onLog("[ERROR] Erro ao injetar: ${e.message}")
         }
     }
 
-    private fun buildRawUdpPacket(
-        srcIp: InetAddress,
-        srcPort: Int,
-        dstIp: InetAddress,
-        dstPort: Int,
-        payload: ByteArray
-    ): ByteArray {
+    private fun buildRawUdpPacket(srcIp: InetAddress, srcPort: Int, dstIp: InetAddress, dstPort: Int, payload: ByteArray): ByteArray {
         val totalLength = 20 + 8 + payload.size
         val packet = ByteArray(totalLength)
 
-        // IP Header
-        packet[0] = 0x45.toByte() // Version 4, IHL 5
-        packet[1] = 0.toByte()    // TOS
+        packet[0] = 0x45.toByte()
+        packet[1] = 0.toByte()
         packet[2] = (totalLength shr 8).toByte()
         packet[3] = (totalLength and 0xFF).toByte()
-        packet[4] = 0.toByte()    // ID
+        packet[4] = 0.toByte()
         packet[5] = 0.toByte()
-        packet[6] = 0x40.toByte() // Flags: Don't Fragment
+        packet[6] = 0x40.toByte()
         packet[7] = 0.toByte()
-        packet[8] = 64.toByte()   // TTL
-        packet[9] = 17.toByte()   // Protocol UDP
+        packet[8] = 64.toByte()
+        packet[9] = 17.toByte()
         
-        val srcIpBytes = srcIp.address
-        val dstIpBytes = dstIp.address
-        System.arraycopy(srcIpBytes, 0, packet, 12, 4)
-        System.arraycopy(dstIpBytes, 0, packet, 16, 4)
+        System.arraycopy(srcIp.address, 0, packet, 12, 4)
+        System.arraycopy(dstIp.address, 0, packet, 16, 4)
 
-        // IP Checksum
         val ipChecksum = calculateChecksum(packet, 0, 20)
         packet[10] = (ipChecksum shr 8).toByte()
         packet[11] = (ipChecksum and 0xFF).toByte()
 
-        // UDP Header
         val udpOffset = 20
         packet[udpOffset] = (srcPort shr 8).toByte()
         packet[udpOffset + 1] = (srcPort and 0xFF).toByte()
@@ -212,10 +175,9 @@ class UdpRelayServer(
         val udpLen = 8 + payload.size
         packet[udpOffset + 4] = (udpLen shr 8).toByte()
         packet[udpOffset + 5] = (udpLen and 0xFF).toByte()
-        packet[udpOffset + 6] = 0.toByte() // Checksum 0
+        packet[udpOffset + 6] = 0.toByte()
         packet[udpOffset + 7] = 0.toByte()
 
-        // Payload
         System.arraycopy(payload, 0, packet, 28, payload.size)
 
         return packet
@@ -225,7 +187,7 @@ class UdpRelayServer(
         var sum = 0
         var i = offset
         while (i < offset + length) {
-            if (i == offset + 10) { // Skip checksum field itself
+            if (i == offset + 10) {
                 i += 2
                 continue
             }
@@ -233,9 +195,7 @@ class UdpRelayServer(
             sum += word
             i += 2
         }
-        while (sum shr 16 != 0) {
-            sum = (sum and 0xFFFF) + (sum shr 16)
-        }
+        while (sum shr 16 != 0) sum = (sum and 0xFFFF) + (sum shr 16)
         return (sum.inv() and 0xFFFF)
     }
 
@@ -250,9 +210,7 @@ class UdpRelayServer(
     fun stop() {
         watchdogRunning = false
         watchdogThread.interrupt()
-        sockets.values.forEach { 
-            try { it.socket.close() } catch (e: Exception) {}
-        }
+        sockets.values.forEach { try { it.socket.close() } catch (e: Exception) {} }
         sockets.clear()
     }
 }

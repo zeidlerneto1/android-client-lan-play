@@ -48,7 +48,8 @@ class LanPlayVpnService : VpnService() {
                 vpnService = this,
                 redirector = redirector!!,
                 onTunWrite = ::writeToTun,
-                onLog = ::sendLog
+                onLog = ::sendLog,
+                context = this
             )
             redirector?.setRelay(relay!!)
             redirector?.start()
