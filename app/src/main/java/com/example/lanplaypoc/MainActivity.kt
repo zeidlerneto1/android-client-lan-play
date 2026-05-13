@@ -3,9 +3,7 @@ package com.example.lanplaypoc
 import android.content.Context
 import android.content.Intent
 import android.net.VpnService
-import android.net.wifi.WifiManager
 import android.os.Bundle
-import android.text.format.Formatter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
@@ -65,25 +63,9 @@ class MainActivity : AppCompatActivity() {
             },
             onLog = { msg -> viewModel.log(msg) }
         )
-        
-        updateHotspotIp()
-    }
-    
-    private fun updateHotspotIp() {
-        try {
-            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            val dhcpInfo = wifiManager.dhcpInfo
-            if (dhcpInfo != null && dhcpInfo.serverAddress != 0) {
-                val ip = Formatter.formatIpAddress(dhcpInfo.serverAddress)
-                txtHotspotIp.text = "Hotspot IP: $ip"
-            }
-        } catch (e: Exception) {
-            viewModel.log("[ERROR] Falha ao obter IP do hotspot: ${e.message}")
-        }
     }
 
     private fun prepareVpn() {
-        updateHotspotIp()
         networkScanner?.start()
         val intent = VpnService.prepare(this)
         if (intent != null) {

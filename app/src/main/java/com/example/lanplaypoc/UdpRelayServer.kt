@@ -2,10 +2,10 @@ package com.example.lanplaypoc
 
 import android.content.Context
 import android.net.VpnService
-import android.net.wifi.WifiManager
-import android.text.format.Formatter
 import java.net.DatagramSocket
+import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.NetworkInterface
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.thread
 
@@ -26,14 +26,12 @@ class UdpRelayServer(
     private var gatewayIp: String = ""
 
     init {
-        try {
-            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            val dhcpInfo = wifiManager.dhcpInfo
-            if (dhcpInfo != null && dhcpInfo.serverAddress != 0) {
-                gatewayIp = Formatter.formatIpAddress(dhcpInfo.serverAddress)
-                onLog("[INFO] Gateway IP detectado: $gatewayIp")
-            }
-        } catch (e: Exception) {}
+        gatewayIp = getHotspotIpAddress()
+        if (gatewayIp.isNotEmpty()) {
+            onLog("[INFO] Gateway IP detectado: $gatewayIp")
+        } else {
+            onLog("[ERROR] Não foi possível detectar o IP do Hotspot. Verifique se o Hotspot está ligado.")
+        }
 
         watchdogThread = thread(start = true, name = "UdpRelayWatchdog") {
             while (watchdogRunning) {
@@ -244,5 +242,24 @@ class UdpRelayServer(
         watchdogThread.interrupt()
         sockets.values.forEach { try { it.socket.close() } catch (e: Exception) {} }
         sockets.clear()
+    }
+
+    private fun getHotspotIpAddress(): String {
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            while (interfaces.hasMoreElements()) {
+                val networkInterface = interfaces.nextElement()
+                if (networkInterface.name.contains("wlan0") || networkInterface.name.contains("ap0")) {
+                    val addresses = networkInterface.inetAddresses
+                    while (addresses.hasMoreElements()) {
+                        val address = addresses.nextElement()
+                        if (!address.isLoopbackAddress && address is Inet4Address) {
+                            return address.hostAddress ?: ""
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {}
+        return ""
     }
 }
