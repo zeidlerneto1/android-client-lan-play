@@ -1,8 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:padding="16dp">
+
+    <TextView android:id="@+id/txtInstructions" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="1. Conecte o Switch ao Wi-Fi do Hotspot.\n2. Configuração de IP: Automática (DHCP).\nNenhuma configuração manual é necessária." android:layout_marginBottom="8dp" />
+
+    <TextView android:id="@+id/txtHotspotIp" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Hotspot IP: Detectando..." android:textStyle="bold" />
+    <TextView android:id="@+id/txtSwitchIp" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Switch: Aguardando tráfego..." android:textStyle="bold" android:layout_marginBottom="8dp" />
 
     <EditText
         android:id="@+id/editServer"
@@ -12,8 +18,8 @@
         android:inputType="textUri"
         android:text="lan-play.com:11451" />
 
-    <Button android:id="@+id/btnStart" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="START ALL" />
-    <Button android:id="@+id/btnStop" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="STOP ALL" />
+    <Button android:id="@+id/btnStart" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="INICIAR RELAY" />
+    <Button android:id="@+id/btnStop" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="PARAR RELAY" />
 
     <TextView android:id="@+id/txtStatus" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Status: Stopped" android:layout_marginTop="8dp" />
 

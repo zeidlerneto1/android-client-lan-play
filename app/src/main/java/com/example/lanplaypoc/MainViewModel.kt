@@ -13,8 +13,6 @@ import java.text.SimpleDateFormat
 import java.util.*
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
-    private val hotspotManager: HotspotManager
-
     private val _status = MutableLiveData<String>("Status: Stopped")
     val status: LiveData<String> = _status
 
@@ -31,30 +29,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
-        hotspotManager = HotspotManager(application) { update ->
-            log("Hotspot: $update")
-            if (update.contains("Started")) {
-                _status.postValue("Status: Running")
-            } else if (update.contains("Stopped")) {
-                _status.postValue("Status: Stopped")
-            }
-        }
-
         val filter = IntentFilter(LanPlayVpnService.ACTION_VPN_LOG)
         LocalBroadcastManager.getInstance(application).registerReceiver(vpnLogReceiver, filter)
     }
 
-    fun startHotspot() {
-        hotspotManager.start()
-    }
-
-    fun stopHotspot() {
-        hotspotManager.stop()
-        _status.postValue("Status: Stopped")
+    fun setStatus(newStatus: String) {
+        _status.postValue(newStatus)
     }
 
     fun log(message: String) {
-        val timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+        val timestamp = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault()).format(Date())
         val currentLogs = _logs.value ?: ""
         _logs.postValue("$currentLogs[$timestamp] $message\n")
     }
