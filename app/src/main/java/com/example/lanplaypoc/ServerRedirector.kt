@@ -1,7 +1,6 @@
 package com.example.lanplaypoc
 
 import android.net.VpnService
-import android.util.Log
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -42,8 +41,6 @@ class ServerRedirector(
                     vpnService.protect(this)
                 }
                 
-                onLog("Redirector started for $serverAddress")
-                
                 val buffer = ByteArray(4096)
                 while (running) {
                     val packet = DatagramPacket(buffer, buffer.size)
@@ -51,7 +48,7 @@ class ServerRedirector(
                     handleServerPacket(packet.data, packet.length)
                 }
             } catch (e: Exception) {
-                if (running) onLog("Redirector Error: ${e.message}")
+                if (running) onLog("[ERROR] Redirector: ${e.message}")
             } finally {
                 stop()
             }
@@ -66,7 +63,6 @@ class ServerRedirector(
         socket = null
         receiveThread?.interrupt()
         receiveThread = null
-        onLog("Redirector stopped")
     }
 
     fun forwardToServer(payload: ByteArray, length: Int, sourcePort: Int = 0) {
@@ -88,9 +84,10 @@ class ServerRedirector(
                 
                 val datagram = DatagramPacket(sendBuffer.array(), 0, LanPlayProtocol.HEADER_SIZE + length, ip, serverPort)
                 s.send(datagram)
+                onLog("[REMOTO] Enviado para $serverAddress | Payload: $length bytes")
             }
         } catch (e: Exception) {
-            // onLog("Send Error: ${e.message}")
+            onLog("[ERROR] Send Error: ${e.message}")
         }
     }
 
@@ -99,7 +96,10 @@ class ServerRedirector(
         
         val header = LanPlayProtocol.Header.fromBytes(data)
         if (header != null && header.magic == LanPlayProtocol.MAGIC_NUMBER) {
+            val payloadLength = length - LanPlayProtocol.HEADER_SIZE
             val payload = data.copyOfRange(LanPlayProtocol.HEADER_SIZE, length)
+            onLog("[REMOTO] Recebido de $serverAddress | Payload: $payloadLength bytes")
+            
             val r = relay
             if (r != null) {
                 r.processFromServer(payload, 0)
